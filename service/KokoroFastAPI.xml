@@ -1,0 +1,26 @@
+<service>
+  <id>KokoroFastAPI</id>
+  <name>Kokoro FastAPI TTS</name>
+  <description>Kokoro TTS Engine - FastAPI server providing text-to-speech on port 8880</description>
+
+  <executable>powershell.exe</executable>
+  <arguments>-ExecutionPolicy Bypass -NoProfile -File "%BASE%\start-service.ps1"</arguments>
+  <workingdirectory>%BASE%\..</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+
+  <stoptimeout>30sec</stoptimeout>
+
+  <!-- Network dependencies - ensures network is available before starting -->
+  <depend>Tcpip</depend>
+  <depend>Dnscache</depend>
+
+  <!-- WinSW logging for debugging service startup issues -->
+  <!-- Note: -ExecutionPolicy Bypass is required for WinSW to run PowerShell scripts without user interaction -->
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold>  <!-- 10MB -->
+    <keepFiles>5</keepFiles>
+  </log>
+
+</service>

@@ -1,3 +1,7 @@
+# Activate conda environment
+& C:\Users\Gordon\miniconda3\shell\condabin\conda-hook.ps1
+conda activate kokoro
+
 $env:PHONEMIZER_ESPEAK_LIBRARY="C:\Program Files\eSpeak NG\libespeak-ng.dll"
 $env:PYTHONUTF8=1
 $Env:PROJECT_ROOT="$pwd"
