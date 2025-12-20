@@ -16,8 +16,17 @@ function Write-ServiceLog {
 Write-ServiceLog "Starting Kokoro FastAPI service..."
 Write-ServiceLog "Project root: $projectRoot"
 
+# Conda environment paths - configurable via environment variables (needed early for eSpeak detection)
+# Note: $env:USERPROFILE doesn't work for services (resolves to SYSTEM profile)
+# Use explicit paths or environment variables for service context
+$defaultCondaRoot = "C:\Users\Gordon\miniconda3"
+$condaRoot = if ($env:CONDA_ROOT) { $env:CONDA_ROOT } else { $defaultCondaRoot }
+$condaEnv = if ($env:KOKORO_CONDA_ENV) { $env:KOKORO_CONDA_ENV } else { Join-Path $condaRoot "envs\kokoro" }
+
 # Validate and set eSpeak library path
+# Check espeakng-loader bundled DLL first (in conda env), then system installations
 $espeakPaths = @(
+    (Join-Path $condaEnv "Lib\site-packages\espeakng_loader\espeak-ng.dll"),
     "C:\Program Files\eSpeak NG\libespeak-ng.dll",
     "C:\Program Files (x86)\eSpeak NG\libespeak-ng.dll",
     "$env:ESPEAK_PATH"
@@ -34,7 +43,12 @@ foreach ($path in $espeakPaths) {
 }
 
 if (-not $espeakFound) {
-    Write-ServiceLog "ERROR: eSpeak NG library not found. Please install eSpeak NG or set ESPEAK_PATH environment variable." "ERROR"
+    Write-ServiceLog "ERROR: eSpeak NG library not found." "ERROR"
+    Write-ServiceLog "Searched paths:" "ERROR"
+    foreach ($p in $espeakPaths) {
+        if ($p) { Write-ServiceLog "  - $p" "ERROR" }
+    }
+    Write-ServiceLog "Please install eSpeak NG or set ESPEAK_PATH environment variable." "ERROR"
     exit 1
 }
 
@@ -47,10 +61,6 @@ $env:PYTHONPATH = "$projectRoot;$projectRoot\api"
 $env:MODEL_DIR = "src/models"
 $env:VOICES_DIR = "src/voices/v1_0"
 $env:WEB_PLAYER_PATH = "$projectRoot\web"
-
-# Conda environment paths - configurable via environment variables
-$condaRoot = if ($env:CONDA_ROOT) { $env:CONDA_ROOT } else { Join-Path $env:USERPROFILE "miniconda3" }
-$condaEnv = if ($env:KOKORO_CONDA_ENV) { $env:KOKORO_CONDA_ENV } else { Join-Path $condaRoot "envs\kokoro" }
 
 Write-ServiceLog "Conda root: $condaRoot"
 Write-ServiceLog "Conda environment: $condaEnv"

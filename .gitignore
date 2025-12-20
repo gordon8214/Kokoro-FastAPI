@@ -43,6 +43,7 @@ ENV/
 # Other project files
 .env
 Kokoro-82M/
+logs/
 ui/data/
 EXTERNAL_UV_DOCUMENTATION*
 app

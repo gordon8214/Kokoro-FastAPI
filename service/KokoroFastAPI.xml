@@ -19,8 +19,9 @@
   <!-- WinSW logging for debugging service startup issues -->
   <!-- Note: -ExecutionPolicy Bypass is required for WinSW to run PowerShell scripts without user interaction -->
   <log mode="roll-by-size">
+    <logpath>%BASE%\..\logs</logpath>
     <sizeThreshold>10485760</sizeThreshold>  <!-- 10MB -->
-    <keepFiles>5</keepFiles>
+    <keepFiles>2</keepFiles>
   </log>
 
 </service>
