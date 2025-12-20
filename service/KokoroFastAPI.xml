@@ -16,12 +16,7 @@
   <depend>Tcpip</depend>
   <depend>Dnscache</depend>
 
-  <!-- WinSW logging for debugging service startup issues -->
-  <!-- Note: -ExecutionPolicy Bypass is required for WinSW to run PowerShell scripts without user interaction -->
-  <log mode="roll-by-size">
-    <logpath>%BASE%\..\logs</logpath>
-    <sizeThreshold>10485760</sizeThreshold>  <!-- 10MB -->
-    <keepFiles>2</keepFiles>
-  </log>
+  <!-- Logging handled by Python/loguru with rotation to logs/kokoro.log -->
+  <log mode="none"></log>
 
 </service>

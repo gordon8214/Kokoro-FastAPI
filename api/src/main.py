@@ -21,28 +21,40 @@ from .routers.web_player import router as web_router
 
 
 def setup_logger():
-    """Configure loguru logger with custom formatting"""
+    """Configure loguru logger with file rotation"""
     valid_levels = ["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"]
     level = os.getenv("API_LOG_LEVEL", "DEBUG").upper()
     if level not in valid_levels:
         level = "DEBUG"
-    print(f"Global API loguru logger level: {level}")
-    config = {
-        "handlers": [
-            {
-                "sink": sys.stdout,
-                "format": "<fg #2E8B57>{time:hh:mm:ss A}</fg #2E8B57> | "
-                "{level: <8} | "
-                "<fg #4169E1>{module}:{line}</fg #4169E1> | "
-                "{message}",
-                "colorize": True,
-                "level": level,
-            },
-        ],
-    }
+
+    # Determine log file path
+    project_root = os.getenv("PROJECT_ROOT", str(Path(__file__).parent.parent.parent))
+    log_file = Path(project_root) / "logs" / "kokoro.log"
+    log_file.parent.mkdir(exist_ok=True)
+
     logger.remove()
-    logger.configure(**config)
-    logger.level("ERROR", color="<red>")
+
+    # File handler with rotation (single file, truncates at 10MB)
+    logger.add(
+        log_file,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {module}:{line} | {message}",
+        level=level,
+        rotation="10 MB",
+        retention=0,  # Delete old rotated files immediately (keeps only current)
+    )
+
+    # Also log to stdout for console/debug visibility
+    logger.add(
+        sys.stdout,
+        format="<fg #2E8B57>{time:hh:mm:ss A}</fg #2E8B57> | "
+        "{level: <8} | "
+        "<fg #4169E1>{module}:{line}</fg #4169E1> | "
+        "{message}",
+        colorize=True,
+        level=level,
+    )
+
+    print(f"Logging to {log_file} (level: {level})")
 
 
 # Configure logger

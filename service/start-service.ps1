@@ -90,8 +90,9 @@ Write-ServiceLog "Starting uvicorn on port 8880..."
 
 # Start uvicorn using the conda environment's python
 # Using -u for unbuffered output so logs appear immediately
+# Redirect stderr to stdout (2>&1) for unified logging
 try {
-    & $pythonExe -u -m uvicorn api.src.main:app --host 0.0.0.0 --port 8880
+    & $pythonExe -u -m uvicorn api.src.main:app --host 0.0.0.0 --port 8880 2>&1
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         Write-ServiceLog "Uvicorn exited with code: $exitCode" "ERROR"
