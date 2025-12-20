@@ -17,6 +17,9 @@
   <depend>Dnscache</depend>
 
   <!-- Logging handled by Python/loguru with rotation to logs/kokoro.log -->
-  <log mode="none"></log>
+  <!-- WinSW wrapper.log still goes to logs/ for service start/stop events -->
+  <log mode="none">
+    <logpath>%BASE%\..\logs</logpath>
+  </log>
 
 </service>
