@@ -87,6 +87,9 @@ class TTSService:
                 if not tokens and not chunk_text:
                     return
 
+                # Ensure model is loaded (lazy init on first request)
+                await self.model_manager.ensure_loaded()
+
                 # Get backend
                 backend = self.model_manager.get_backend()
 
@@ -272,6 +275,9 @@ class TTSService:
         chunk_index = 0
         current_offset = 0.0
         try:
+            # Ensure model is loaded (lazy init on first request)
+            await self.model_manager.ensure_loaded()
+
             # Get backend
             backend = self.model_manager.get_backend()
 
@@ -465,6 +471,9 @@ class TTSService:
         """
         start_time = time.time()
         try:
+            # Ensure model is loaded (lazy init on first request)
+            await self.model_manager.ensure_loaded()
+
             # Get backend and voice path
             backend = self.model_manager.get_backend()
             voice_name, voice_path = await self._get_voices_path(voice)

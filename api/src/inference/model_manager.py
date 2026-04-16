@@ -1,5 +1,6 @@
 """Kokoro V1 model management."""
 
+import asyncio
 from typing import Optional
 
 from loguru import logger
@@ -26,6 +27,7 @@ class ModelManager:
         self._config = config or model_config
         self._backend: Optional[KokoroV1] = None  # Explicitly type as KokoroV1
         self._device: Optional[str] = None
+        self._load_lock = asyncio.Lock()
 
     def _determine_device(self) -> str:
         """Determine device based on settings."""
@@ -147,11 +149,31 @@ Model files not found! You need to download the Kokoro V1 model:
         except Exception as e:
             raise RuntimeError(f"Generation failed: {e}")
 
+    @property
+    def is_loaded(self) -> bool:
+        """Check if model is currently loaded."""
+        return self._backend is not None
+
+    async def ensure_loaded(self) -> None:
+        """Ensure model is loaded, initializing on first call."""
+        if self._backend is not None:
+            return
+        async with self._load_lock:
+            if self._backend is not None:
+                return
+            from .voice_manager import get_manager as get_voice_manager
+
+            logger.info("Lazy-loading Kokoro model on first request...")
+            voice_manager = await get_voice_manager()
+            await self.initialize_with_warmup(voice_manager)
+
     def unload_all(self) -> None:
         """Unload model and free resources."""
         if self._backend:
-            self._backend.unload()
+            logger.info("Unloading Kokoro model...")
+            self._backend.unload()  # handles torch.cuda.empty_cache() internally
             self._backend = None
+            logger.info("Kokoro model unloaded, VRAM freed")
 
     @property
     def current_backend(self) -> str:

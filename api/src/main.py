@@ -7,7 +7,6 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import torch
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,64 +62,13 @@ setup_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for model initialization"""
-    from .inference.model_manager import get_manager
-    from .inference.voice_manager import get_manager as get_voice_manager
+    """Lifespan context manager — model loads lazily on first request."""
     from .services.temp_manager import cleanup_temp_files
 
     # Clean old temp files on startup
     await cleanup_temp_files()
 
-    logger.info("Loading TTS model and voice packs...")
-
-    try:
-        # Initialize managers
-        model_manager = await get_manager()
-        voice_manager = await get_voice_manager()
-
-        # Initialize model with warmup and get status
-        device, model, voicepack_count = await model_manager.initialize_with_warmup(
-            voice_manager
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to initialize model: {e}")
-        raise
-
-    boundary = "░" * 2 * 12
-    startup_msg = f"""
-
-{boundary}
-
-    ╔═╗┌─┐┌─┐┌┬┐
-    ╠╣ ├─┤└─┐ │ 
-    ╚  ┴ ┴└─┘ ┴
-    ╦╔═┌─┐┬┌─┌─┐
-    ╠╩╗│ │├┴┐│ │
-    ╩ ╩└─┘┴ ┴└─┘
-
-{boundary}
-                """
-    startup_msg += f"\nModel warmed up on {device}: {model}"
-    if device == "mps":
-        startup_msg += "\nUsing Apple Metal Performance Shaders (MPS)"
-    elif device == "cuda":
-        startup_msg += f"\nCUDA: {torch.cuda.is_available()}"
-    else:
-        startup_msg += "\nRunning on CPU"
-    startup_msg += f"\n{voicepack_count} voice packs loaded"
-
-    # Add web player info if enabled
-    if settings.enable_web_player:
-        startup_msg += (
-            f"\n\nBeta Web Player: http://{settings.host}:{settings.port}/web/"
-        )
-        startup_msg += f"\nor http://localhost:{settings.port}/web/"
-    else:
-        startup_msg += "\n\nWeb Player: disabled"
-
-    startup_msg += f"\n{boundary}\n"
-    logger.info(startup_msg)
+    logger.info("Kokoro FastAPI started (model will load on first request)")
 
     yield
 
@@ -156,7 +104,22 @@ if settings.enable_web_player:
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy"}
+    from .inference.model_manager import get_manager
+
+    model_manager = await get_manager()
+    return {"status": "healthy", "model_loaded": model_manager.is_loaded}
+
+
+@app.post("/unload")
+async def unload_model():
+    """Unload model from VRAM to free GPU memory."""
+    from .inference.model_manager import get_manager
+
+    model_manager = await get_manager()
+    if not model_manager.is_loaded:
+        return {"status": "ok", "message": "No model loaded"}
+    model_manager.unload_all()
+    return {"status": "ok", "message": "Model unloaded"}
 
 
 @app.get("/v1/test")
