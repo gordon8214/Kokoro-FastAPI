@@ -17,12 +17,15 @@ from ..inference.base import AudioChunk
 from ..services.audio import AudioNormalizer, AudioService
 from ..services.streaming_audio_writer import StreamingAudioWriter
 from ..services.temp_manager import TempFileWriter
-from ..services.text_processing import smart_split
+from ..services.text_processing import KokoroTextPlanner, smart_split, tokenize_kokoro
+from ..services.text_processing.vocabulary import get_kokoro_vocab
 from ..services.tts_service import TTSService
 from ..structures import CaptionedSpeechRequest, CaptionedSpeechResponse, WordTimestamp
 from ..structures.custom_responses import JSONStreamingResponse
 from ..structures.text_schemas import (
     GenerateFromPhonemesRequest,
+    KokoroPlanChunkResponse,
+    KokoroPlanResponse,
     PhonemeRequest,
     PhonemeResponse,
 )
@@ -55,14 +58,13 @@ async def phonemize_text(request: PhonemeRequest) -> PhonemeResponse:
         # Initialize Kokoro pipeline in quiet mode (no model)
         pipeline = KPipeline(lang_code=request.language, model=False)
 
-        # Get first result from pipeline (we only need one since we're not chunking)
-        for result in pipeline(request.text):
-            # result.graphemes = original text
-            # result.phonemes = phonemized text
-            # result.tokens = token objects (if available)
-            return PhonemeResponse(phonemes=result.phonemes, tokens=[])
-
-        raise ValueError("Failed to generate phonemes")
+        phonemes, _ = pipeline.g2p(request.text)
+        if not phonemes:
+            raise ValueError("Failed to generate phonemes")
+        return PhonemeResponse(
+            phonemes=phonemes,
+            tokens=tokenize_kokoro(phonemes),
+        )
     except ValueError as e:
         logger.error(f"Error in phoneme generation: {str(e)}")
         raise HTTPException(
@@ -73,6 +75,36 @@ async def phonemize_text(request: PhonemeRequest) -> PhonemeResponse:
         raise HTTPException(
             status_code=500, detail={"error": "Server error", "message": str(e)}
         )
+
+
+@router.post("/dev/kokoro-plan", response_model=KokoroPlanResponse)
+async def plan_kokoro_text(request: PhonemeRequest) -> KokoroPlanResponse:
+    """Return the exact normalized chunks, phonemes, and model token IDs."""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+    if request.language not in {"a", "b"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Kokoro frontend planning currently supports English a/b only",
+        )
+
+    pipeline = KPipeline(lang_code=request.language, model=False)
+    planner = KokoroTextPlanner(
+        pipeline=pipeline,
+        vocab=get_kokoro_vocab(),
+        lang_code=request.language,
+    )
+    chunks = []
+    async for chunk in planner.plan(request.text):
+        chunks.append(
+            KokoroPlanChunkResponse(
+                text=chunk.text,
+                phonemes=chunk.phonemes,
+                tokens=list(chunk.token_ids),
+                pause_duration_s=chunk.pause_duration_s,
+            )
+        )
+    return KokoroPlanResponse(language=request.language, chunks=chunks)
 
 
 @router.post("/dev/generate_from_phonemes")
@@ -226,7 +258,8 @@ async def create_captioned_speech(
                                 # Add any chunks that may be in the acumulator into the return word_timestamps
                                 if chunk_data.word_timestamps is not None:
                                     chunk_data.word_timestamps = (
-                                        timestamp_acumulator + chunk_data.word_timestamps
+                                        timestamp_acumulator
+                                        + chunk_data.word_timestamps
                                     )
                                     timestamp_acumulator = []
                                 else:

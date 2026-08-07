@@ -9,7 +9,6 @@ from typing import AsyncGenerator, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from kokoro import KPipeline
 from loguru import logger
 
 from ..core.config import settings
@@ -20,8 +19,8 @@ from ..inference.voice_manager import get_manager as get_voice_manager
 from ..structures.schemas import NormalizationOptions
 from .audio import AudioNormalizer, AudioService
 from .streaming_audio_writer import StreamingAudioWriter
-from .text_processing import tokenize
-from .text_processing.text_processor import process_text_chunk, smart_split
+from .text_processing import KokoroPlannedChunk
+from .text_processing.text_processor import smart_split
 
 
 class TTSService:
@@ -59,6 +58,7 @@ class TTSService:
         normalizer: Optional[AudioNormalizer] = None,
         lang_code: Optional[str] = None,
         return_timestamps: Optional[bool] = False,
+        prepared_chunk: Optional[KokoroPlannedChunk] = None,
     ) -> AsyncGenerator[AudioChunk, None]:
         """Process tokens into audio."""
         async with self._chunk_semaphore:
@@ -96,6 +96,7 @@ class TTSService:
                 # Generate audio using pre-warmed model
                 if isinstance(backend, KokoroV1):
                     chunk_index = 0
+                    generated_audio = False
                     # For Kokoro V1, pass text and voice info with lang_code
                     async for chunk_data in self.model_manager.generate(
                         chunk_text,
@@ -103,8 +104,24 @@ class TTSService:
                         speed=speed,
                         lang_code=lang_code,
                         return_timestamps=return_timestamps,
+                        prepared_tokens=(
+                            prepared_chunk.misaki_tokens
+                            if prepared_chunk is not None
+                            else None
+                        ),
+                        prepared_phonemes=(
+                            prepared_chunk.phonemes
+                            if prepared_chunk is not None
+                            else None
+                        ),
+                        prepared_token_ids=(
+                            prepared_chunk.token_ids
+                            if prepared_chunk is not None
+                            else None
+                        ),
                     ):
-                        chunk_data.audio*=volume_multiplier
+                        generated_audio = True
+                        chunk_data.audio *= volume_multiplier
                         # For streaming, convert to bytes
                         if output_format:
                             try:
@@ -120,12 +137,18 @@ class TTSService:
                                 yield chunk_data
                             except Exception as e:
                                 logger.error(f"Failed to convert audio: {str(e)}")
+                                if prepared_chunk is not None:
+                                    raise
                         else:
                             chunk_data = AudioService.trim_audio(
                                 chunk_data, chunk_text, speed, is_last, normalizer
                             )
                             yield chunk_data
                         chunk_index += 1
+                    if prepared_chunk is not None and not generated_audio:
+                        raise RuntimeError(
+                            "Kokoro produced no audio for the prepared chunk"
+                        )
                 else:
                     # For legacy backends, load voice tensor
                     voice_tensor = await self._voice_manager.load_voice(
@@ -137,7 +160,7 @@ class TTSService:
                         speed=speed,
                         return_timestamps=return_timestamps,
                     )
-                    
+
                     if chunk_data.audio is None:
                         logger.error("Model generated None for audio chunk")
                         return
@@ -146,7 +169,7 @@ class TTSService:
                         logger.error("Model generated empty audio chunk")
                         return
 
-                    chunk_data.audio*=volume_multiplier
+                    chunk_data.audio *= volume_multiplier
 
                     # For streaming, convert to bytes
                     if output_format:
@@ -170,6 +193,8 @@ class TTSService:
                         yield trimmed
             except Exception as e:
                 logger.error(f"Failed to process tokens: {str(e)}")
+                if prepared_chunk is not None:
+                    raise
 
     async def _load_voice_from_path(self, path: str, weight: float):
         # Check if the path is None and raise a ValueError if it is not
@@ -291,27 +316,58 @@ class TTSService:
                 f"Using lang_code '{pipeline_lang_code}' for voice '{voice_name}' in audio stream"
             )
 
-            # Process text in chunks with smart splitting, handling pause tags
-            async for chunk_text, tokens, pause_duration_s in smart_split(
-                text,
-                lang_code=pipeline_lang_code,
-                normalization_options=normalization_options,
+            # Kokoro English plans against final Misaki output. Other languages
+            # and any legacy backend retain the existing eSpeak splitter.
+            if isinstance(backend, KokoroV1) and backend.supports_frontend_planning(
+                pipeline_lang_code
             ):
+                planned_chunks = backend.plan_text(
+                    text,
+                    lang_code=pipeline_lang_code,
+                    normalization_options=normalization_options,
+                )
+            else:
+                planned_chunks = smart_split(
+                    text,
+                    lang_code=pipeline_lang_code,
+                    normalization_options=normalization_options,
+                )
+
+            async for planned in planned_chunks:
+                prepared_chunk: Optional[KokoroPlannedChunk]
+                if isinstance(planned, KokoroPlannedChunk):
+                    prepared_chunk = planned
+                    chunk_text = planned.text
+                    tokens = list(planned.token_ids)
+                    pause_duration_s = planned.pause_duration_s
+                else:
+                    prepared_chunk = None
+                    chunk_text, tokens, pause_duration_s = planned
+
                 if pause_duration_s is not None and pause_duration_s > 0:
                     # --- Handle Pause Chunk ---
                     try:
                         logger.debug(f"Generating {pause_duration_s}s silence chunk")
-                        silence_samples = int(pause_duration_s * 24000)  # 24kHz sample rate
+                        silence_samples = int(
+                            pause_duration_s * 24000
+                        )  # 24kHz sample rate
                         # Create proper silence as int16 zeros to avoid normalization artifacts
                         silence_audio = np.zeros(silence_samples, dtype=np.int16)
-                        pause_chunk = AudioChunk(audio=silence_audio, word_timestamps=[])  # Empty timestamps for silence
+                        pause_chunk = AudioChunk(
+                            audio=silence_audio, word_timestamps=[]
+                        )  # Empty timestamps for silence
 
                         # Format and yield the silence chunk
                         if output_format:
                             formatted_pause_chunk = await AudioService.convert_audio(
-                                pause_chunk, output_format, writer, speed=speed, chunk_text="",
-                                is_last_chunk=False, trim_audio=False, normalizer=stream_normalizer,
-
+                                pause_chunk,
+                                output_format,
+                                writer,
+                                speed=speed,
+                                chunk_text="",
+                                is_last_chunk=False,
+                                trim_audio=False,
+                                normalizer=stream_normalizer,
                             )
                             if formatted_pause_chunk.output:
                                 yield formatted_pause_chunk
@@ -327,9 +383,13 @@ class TTSService:
 
                     except Exception as e:
                         logger.error(f"Failed to process pause chunk: {str(e)}")
+                        if prepared_chunk is not None:
+                            raise
                         continue
 
-                elif tokens or chunk_text.strip():  # Process if there are tokens OR non-whitespace text
+                elif (
+                    tokens or chunk_text.strip()
+                ):  # Process if there are tokens OR non-whitespace text
                     # --- Handle Text Chunk ---
                     try:
                         # Process audio for chunk
@@ -347,6 +407,7 @@ class TTSService:
                             normalizer=stream_normalizer,
                             lang_code=pipeline_lang_code,  # Pass lang_code
                             return_timestamps=return_timestamps,
+                            prepared_chunk=prepared_chunk,
                         ):
                             if chunk_data.word_timestamps is not None:
                                 for timestamp in chunk_data.word_timestamps:
@@ -355,14 +416,20 @@ class TTSService:
 
                             # Update offset based on the actual duration of the generated audio chunk
                             chunk_duration = 0
-                            if chunk_data.audio is not None and len(chunk_data.audio) > 0:
+                            if (
+                                chunk_data.audio is not None
+                                and len(chunk_data.audio) > 0
+                            ):
                                 chunk_duration = len(chunk_data.audio) / 24000
                                 current_offset += chunk_duration
 
                             # Yield the processed chunk (either formatted or raw)
                             if chunk_data.output is not None:
                                 yield chunk_data
-                            elif chunk_data.audio is not None and len(chunk_data.audio) > 0:
+                            elif (
+                                chunk_data.audio is not None
+                                and len(chunk_data.audio) > 0
+                            ):
                                 yield chunk_data
                             else:
                                 logger.warning(
@@ -374,6 +441,8 @@ class TTSService:
                         logger.error(
                             f"Failed to process audio for chunk: '{chunk_text[:100]}...'. Error: {str(e)}"
                         )
+                        if prepared_chunk is not None:
+                            raise
                         continue
 
             # Only finalize if we successfully processed at least one chunk

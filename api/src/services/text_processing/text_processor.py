@@ -2,7 +2,7 @@
 
 import re
 import time
-from typing import AsyncGenerator, Dict, List, Tuple, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -34,10 +34,10 @@ def process_text_chunk(
         List of token IDs
     """
     start_time = time.time()
-    
+
     # Strip input text to remove any leading/trailing spaces that could cause artifacts
     text = text.strip()
-    
+
     if not text:
         return []
 
@@ -103,6 +103,21 @@ def get_sentence_info(
     text: str, lang_code: str = "a"
 ) -> List[Tuple[str, List[int], int]]:
     """Process all sentences and return info"""
+    sentences = split_sentences(text, lang_code)
+
+    results = []
+    # The legacy phonemizer only implements English. Preserve its historical
+    # non-English fallback while making British English honor the requested
+    # code instead of silently using American English.
+    processing_language = lang_code if lang_code in {"a", "b"} else "a"
+    for full in sentences:
+        tokens = process_text_chunk(full, language=processing_language)
+        results.append((full, tokens, len(tokens)))
+    return results
+
+
+def split_sentences(text: str, lang_code: str = "a") -> List[str]:
+    """Split text while retaining the punctuation that ended each sentence."""
     # Detect Chinese text
     is_chinese = lang_code.startswith("z") or re.search(r"[\u4e00-\u9fff]", text)
     if is_chinese:
@@ -111,7 +126,7 @@ def get_sentence_info(
     else:
         sentences = re.split(r"([.!?;:])(?=\s|$)", text)
 
-    results = []
+    results: List[str] = []
     for i in range(0, len(sentences), 2):
         sentence = sentences[i].strip()
         punct = sentences[i + 1] if i + 1 < len(sentences) else ""
@@ -122,8 +137,7 @@ def get_sentence_info(
         full = full.strip()
         if not full:  # Skip if empty after stripping
             continue
-        tokens = process_text_chunk(full)
-        results.append((full, tokens, len(tokens)))
+        results.append(full)
     return results
 
 
@@ -140,7 +154,7 @@ async def smart_split(
     normalization_options: NormalizationOptions = NormalizationOptions(),
 ) -> AsyncGenerator[Tuple[str, List[int], Optional[float]], None]:
     """Build optimal chunks targeting 300-400 tokens, never exceeding max_tokens.
-    
+
     Yields:
         Tuple of (text_chunk, tokens, pause_duration_s).
         If pause_duration_s is not None, it's a pause chunk with empty text/tokens.
@@ -161,7 +175,9 @@ async def smart_split(
         part_idx += 1
 
         # --- Process Text Part ---
-        if text_part_raw and text_part_raw.strip():  # Only process if the part is not empty string
+        if (
+            text_part_raw and text_part_raw.strip()
+        ):  # Only process if the part is not empty string
             # Strip leading and trailing spaces to prevent pause tag splitting artifacts
             text_part_raw = text_part_raw.strip()
 
@@ -171,8 +187,9 @@ async def smart_split(
                 if lang_code in ["a", "b", "en-us", "en-gb"]:
                     processed_text = CUSTOM_PHONEMES.split(processed_text)
                     for index in range(0, len(processed_text), 2):
-                        processed_text[index] = normalize_text(processed_text[index], normalization_options)
-
+                        processed_text[index] = normalize_text(
+                            processed_text[index], normalization_options
+                        )
 
                     processed_text = "".join(processed_text).strip()
                 else:
@@ -316,7 +333,9 @@ async def smart_split(
                         yield "", [], duration  # Yield pause chunk
                 except (ValueError, TypeError):
                     # This case should be rare if re.fullmatch passed, but handle anyway
-                    logger.warning(f"Could not parse valid-looking pause duration: {duration_str}")
+                    logger.warning(
+                        f"Could not parse valid-looking pause duration: {duration_str}"
+                    )
 
     # --- End of parts loop ---
     total_time = time.time() - start_time

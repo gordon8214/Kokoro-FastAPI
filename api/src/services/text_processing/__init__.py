@@ -1,9 +1,10 @@
 """Text processing pipeline."""
 
+from .kokoro_planner import KokoroPlannedChunk, KokoroTextPlanner
 from .normalizer import normalize_text
 from .phonemizer import phonemize
 from .text_processor import process_text_chunk, smart_split
-from .vocabulary import tokenize
+from .vocabulary import tokenize, tokenize_kokoro
 
 
 def process_text(text: str) -> list[int]:
@@ -15,7 +16,10 @@ __all__ = [
     "normalize_text",
     "phonemize",
     "tokenize",
+    "tokenize_kokoro",
     "process_text",
     "process_text_chunk",
     "smart_split",
+    "KokoroPlannedChunk",
+    "KokoroTextPlanner",
 ]

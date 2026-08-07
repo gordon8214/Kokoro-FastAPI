@@ -1,7 +1,7 @@
 """Clean Kokoro implementation with controlled resource management."""
 
 import os
-from typing import AsyncGenerator, Dict, Optional, Tuple, Union
+from typing import AsyncGenerator, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -11,7 +11,11 @@ from loguru import logger
 from ..core import paths
 from ..core.config import settings
 from ..core.model_config import model_config
-from ..structures.schemas import WordTimestamp
+from ..services.text_processing.kokoro_planner import (
+    KokoroPlannedChunk,
+    KokoroTextPlanner,
+)
+from ..structures.schemas import NormalizationOptions, WordTimestamp
 from .base import AudioChunk, BaseModelBackend
 
 
@@ -83,6 +87,31 @@ class KokoroV1(BaseModelBackend):
                 lang_code=lang_code, model=self._model, device=self._device
             )
         return self._pipelines[lang_code]
+
+    @staticmethod
+    def supports_frontend_planning(lang_code: str) -> bool:
+        """Return whether this language uses Misaki's English token frontend."""
+        return lang_code in {"a", "b"}
+
+    async def plan_text(
+        self,
+        text: str,
+        lang_code: str,
+        normalization_options: Optional[NormalizationOptions] = None,
+    ) -> AsyncGenerator[KokoroPlannedChunk, None]:
+        """Plan English chunks from final Misaki output and model vocabulary."""
+        if not self.is_loaded or self._model is None:
+            raise RuntimeError("Model not loaded")
+        if not self.supports_frontend_planning(lang_code):
+            raise ValueError(f"Misaki-native planning is unavailable for '{lang_code}'")
+
+        planner = KokoroTextPlanner(
+            pipeline=self._get_pipeline(lang_code),
+            vocab=self._model.vocab,
+            lang_code=lang_code,
+        )
+        async for chunk in planner.plan(text, normalization_options):
+            yield chunk
 
     async def generate_from_tokens(
         self,
@@ -181,6 +210,7 @@ class KokoroV1(BaseModelBackend):
                     tokens, voice, speed, lang_code
                 ):
                     yield chunk
+                return
             raise
 
     async def generate(
@@ -190,6 +220,9 @@ class KokoroV1(BaseModelBackend):
         speed: float = 1.0,
         lang_code: Optional[str] = None,
         return_timestamps: Optional[bool] = False,
+        prepared_tokens: Optional[Sequence[object]] = None,
+        prepared_phonemes: Optional[str] = None,
+        prepared_token_ids: Optional[Sequence[int]] = None,
     ) -> AsyncGenerator[AudioChunk, None]:
         """Generate audio using model.
 
@@ -261,9 +294,47 @@ class KokoroV1(BaseModelBackend):
             logger.debug(
                 f"Generating audio for text with lang_code '{pipeline_lang_code}': '{text[:100]}{'...' if len(text) > 100 else ''}'"
             )
-            for result in pipeline(
-                text, voice=voice_path, speed=speed, model=self._model
-            ):
+            if prepared_tokens is None:
+                results = pipeline(
+                    text, voice=voice_path, speed=speed, model=self._model
+                )
+            else:
+                if prepared_phonemes is None or prepared_token_ids is None:
+                    raise ValueError(
+                        "Prepared Kokoro synthesis requires phonemes and token IDs"
+                    )
+                actual_token_ids = tuple(
+                    token_id
+                    for phoneme in prepared_phonemes
+                    if (token_id := self._model.vocab.get(phoneme)) is not None
+                )
+                if len(actual_token_ids) != len(prepared_phonemes):
+                    unknown = sorted(
+                        set(prepared_phonemes).difference(self._model.vocab)
+                    )
+                    raise ValueError(
+                        f"Kokoro vocabulary does not contain symbols: {unknown}"
+                    )
+                if actual_token_ids != tuple(prepared_token_ids):
+                    raise RuntimeError(
+                        "Prepared Kokoro token IDs changed before inference"
+                    )
+                results = pipeline.generate_from_tokens(
+                    tokens=list(prepared_tokens),
+                    voice=voice_path,
+                    speed=speed,
+                    model=self._model,
+                )
+
+            for result in results:
+                if (
+                    prepared_phonemes is not None
+                    and result.phonemes != prepared_phonemes
+                ):
+                    raise RuntimeError(
+                        "Prepared Kokoro phonemes changed before inference: "
+                        f"{prepared_phonemes!r} != {result.phonemes!r}"
+                    )
                 if result.audio is not None:
                     logger.debug(f"Got audio chunk with shape: {result.audio.shape}")
                     word_timestamps = None
@@ -325,8 +396,18 @@ class KokoroV1(BaseModelBackend):
                 and "out of memory" in str(e).lower()
             ):
                 self._clear_memory()
-                async for chunk in self.generate(text, voice, speed, lang_code):
+                async for chunk in self.generate(
+                    text,
+                    voice,
+                    speed,
+                    lang_code,
+                    return_timestamps,
+                    prepared_tokens,
+                    prepared_phonemes,
+                    prepared_token_ids,
+                ):
                     yield chunk
+                return
             raise
 
     def _check_memory(self) -> bool:

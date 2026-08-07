@@ -13,6 +13,18 @@ class PhonemeResponse(BaseModel):
     tokens: list[int]
 
 
+class KokoroPlanChunkResponse(BaseModel):
+    text: str
+    phonemes: str
+    tokens: list[int]
+    pause_duration_s: Optional[float] = None
+
+
+class KokoroPlanResponse(BaseModel):
+    language: str
+    chunks: list[KokoroPlanChunkResponse]
+
+
 class StitchOptions(BaseModel):
     """Options for stitching audio chunks together"""
 

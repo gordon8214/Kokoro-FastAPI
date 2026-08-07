@@ -3,8 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 import torch
-import os
 
+from api.src.inference.base import AudioChunk
+from api.src.inference.kokoro_v1 import KokoroV1
+from api.src.services.text_processing import KokoroPlannedChunk
 from api.src.services.tts_service import TTSService
 
 
@@ -128,3 +130,94 @@ async def test_list_voices():
         voices = await service.list_voices()
         assert voices == ["voice1", "voice2"]
         voice_manager.list_voices.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_english_kokoro_stream_uses_one_frozen_frontend_plan():
+    """The stream synthesizes the exact units emitted by Kokoro's planner."""
+    planned = KokoroPlannedChunk(
+        text="They are content.",
+        phonemes="ðˌA ɑɹ kəntˈɛnt.",
+        token_ids=(81, 157, 24),
+        misaki_tokens=(MagicMock(),),
+    )
+
+    async def planned_chunks():
+        yield planned
+
+    backend = KokoroV1()
+    backend.plan_text = MagicMock(return_value=planned_chunks())
+    model_manager = MagicMock()
+    model_manager.ensure_loaded = AsyncMock()
+    model_manager.get_backend.return_value = backend
+
+    service = TTSService()
+    service.model_manager = model_manager
+    service._get_voices_path = AsyncMock(return_value=("af_heart", "/voice.pt"))
+    processed = []
+
+    async def process_chunk(*args, **kwargs):
+        processed.append((args, kwargs))
+        yield AudioChunk(np.ones(24, dtype=np.float32), output=None)
+
+    service._process_chunk = process_chunk
+
+    with patch("api.src.services.tts_service.smart_split") as legacy_splitter:
+        chunks = [
+            chunk
+            async for chunk in service.generate_audio_stream(
+                "They are content.",
+                "af_heart",
+                MagicMock(),
+                output_format=None,
+                lang_code="a",
+            )
+        ]
+
+    assert chunks
+    legacy_splitter.assert_not_called()
+    backend.plan_text.assert_called_once()
+    assert processed[0][0][0] == planned.text
+    assert processed[0][0][1] == list(planned.token_ids)
+    assert processed[0][1]["prepared_chunk"] is planned
+    assert processed[0][1]["is_last"] is False
+    assert processed[1][1]["is_last"] is True
+
+
+@pytest.mark.asyncio
+async def test_prepared_chunk_cannot_succeed_without_audio():
+    """A frozen plan mismatch or empty model result must fail the request."""
+    planned = KokoroPlannedChunk(
+        text="They are content.",
+        phonemes="ðˌA ɑɹ kəntˈɛnt.",
+        token_ids=(81, 157, 24),
+        misaki_tokens=(MagicMock(),),
+    )
+    backend = KokoroV1()
+    model_manager = MagicMock()
+    model_manager.ensure_loaded = AsyncMock()
+    model_manager.get_backend.return_value = backend
+
+    async def no_audio(*args, **kwargs):
+        if False:
+            yield None
+
+    model_manager.generate = no_audio
+    service = TTSService()
+    service.model_manager = model_manager
+
+    with pytest.raises(
+        RuntimeError,
+        match="Kokoro produced no audio for the prepared chunk",
+    ):
+        async for _ in service._process_chunk(
+            planned.text,
+            list(planned.token_ids),
+            "af_heart",
+            "/voice.pt",
+            1.0,
+            MagicMock(),
+            output_format=None,
+            prepared_chunk=planned,
+        ):
+            pass

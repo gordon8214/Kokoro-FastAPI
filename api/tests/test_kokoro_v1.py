@@ -19,7 +19,7 @@ def test_initial_state(kokoro_backend):
     assert kokoro_backend._model is None
     assert kokoro_backend._pipelines == {}  # Now using dict of pipelines
     # Device should be set based on settings
-    assert kokoro_backend.device in ["cuda", "cpu"]
+    assert kokoro_backend.device in ["cuda", "mps", "cpu"]
 
 
 @patch("torch.cuda.is_available", return_value=True)
@@ -163,3 +163,68 @@ async def test_generate_uses_correct_pipeline(kokoro_backend):
             call_args = mock_pipeline.call_args
             assert isinstance(call_args[1]["voice"], str)
             assert call_args[1]["voice"].startswith("/tmp/temp_voice_")
+
+
+@pytest.mark.asyncio
+async def test_generate_uses_prepared_misaki_tokens(kokoro_backend):
+    """Prepared chunks bypass KPipeline's text-to-G2P entry point."""
+    kokoro_backend._model = MagicMock()
+    kokoro_backend._model.vocab = {"a": 17, "b": 23}
+    prepared_tokens = [MagicMock(), MagicMock()]
+
+    with (
+        patch("api.src.core.paths.load_voice_tensor") as mock_load_voice,
+        patch("api.src.core.paths.save_voice_tensor"),
+        patch("tempfile.gettempdir", return_value="/tmp"),
+    ):
+        mock_load_voice.return_value = torch.ones(1)
+        mock_pipeline = MagicMock()
+        mock_pipeline.generate_from_tokens.return_value = iter([])
+        with patch(
+            "api.src.inference.kokoro_v1.KPipeline",
+            return_value=mock_pipeline,
+        ):
+            async for _ in kokoro_backend.generate(
+                "The text is diagnostic only.",
+                "af_heart",
+                lang_code="a",
+                prepared_tokens=prepared_tokens,
+                prepared_phonemes="ab",
+                prepared_token_ids=[17, 23],
+            ):
+                pass
+
+        mock_pipeline.assert_not_called()
+        mock_pipeline.generate_from_tokens.assert_called_once_with(
+            tokens=prepared_tokens,
+            voice=ANY,
+            speed=1.0,
+            model=kokoro_backend._model,
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_rejects_changed_prepared_token_ids(kokoro_backend):
+    """Inference cannot silently remap a frozen Kokoro plan."""
+    kokoro_backend._model = MagicMock()
+    kokoro_backend._model.vocab = {"a": 17, "b": 23}
+
+    with (
+        patch("api.src.core.paths.load_voice_tensor") as mock_load_voice,
+        patch("api.src.core.paths.save_voice_tensor"),
+        patch("tempfile.gettempdir", return_value="/tmp"),
+    ):
+        mock_load_voice.return_value = torch.ones(1)
+        with pytest.raises(
+            RuntimeError,
+            match="Prepared Kokoro token IDs changed before inference",
+        ):
+            async for _ in kokoro_backend.generate(
+                "The text is diagnostic only.",
+                "af_heart",
+                lang_code="a",
+                prepared_tokens=[MagicMock()],
+                prepared_phonemes="ab",
+                prepared_token_ids=[17, 99],
+            ):
+                pass
