@@ -138,3 +138,20 @@ async def test_real_misaki_frontend_and_model_vocab_are_materialized_exactly():
     assert chunks[0].phonemes == ("ðˌA ɑɹ kəntˈɛnt. ðə wˈɛbsˌIt kˈɑntɛnt ɪz jˈusfᵊl.")
     assert chunks[0].token_count == len(chunks[0].phonemes)
     assert chunks[0].token_ids[:8] == (81, 157, 24, 16, 69, 123, 16, 53)
+
+
+@pytest.mark.asyncio
+async def test_acronym_plural_and_possessive_reach_misaki_with_a_lowercase_s():
+    from kokoro import KPipeline
+
+    planner = KokoroTextPlanner(
+        KPipeline(lang_code="a", model=False),
+        get_kokoro_vocab(),
+        "a",
+    )
+
+    for text in ["LEDs shine.", "LED's shine.", "LED’s shine."]:
+        chunks = [chunk async for chunk in planner.plan(text, NormalizationOptions())]
+
+        assert len(chunks) == 1
+        assert chunks[0].phonemes == "ˌɛlˌidˈiz ʃˈIn."

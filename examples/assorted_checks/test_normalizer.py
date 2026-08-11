@@ -80,7 +80,6 @@ class TextNormalizerInline:
         text = re.sub(r"\d*\.\d+", handle_decimal, text)
         text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)
         text = re.sub(r"(?<=\d)S", " S", text)
-        text = re.sub(r"(?<=[BCDFGHJ-NP-TV-Z])'?s\b", "'S", text)
         text = re.sub(r"(?<=X')S\b", "s", text)
         text = re.sub(
             r"(?:[A-Za-z]\.){2,} [a-z]", lambda m: m.group().replace(".", "-"), text
@@ -114,7 +113,6 @@ class TextNormalizerCompiled:
             "decimal": re.compile(r"\d*\.\d+"),
             "range": re.compile(r"(?<=\d)-(?=\d)"),
             "s_after_number": re.compile(r"(?<=\d)S"),
-            "possessive_s": re.compile(r"(?<=[BCDFGHJ-NP-TV-Z])'?s\b"),
             "x_possessive": re.compile(r"(?<=X')S\b"),
             "initials": re.compile(r"(?:[A-Za-z]\.){2,} [a-z]"),
             "single_initial": re.compile(r"(?i)(?<=[A-Z])\.(?=[A-Z])"),
@@ -147,7 +145,6 @@ class TextNormalizerCompiled:
         text = self.patterns["decimal"].sub(handle_decimal, text)
         text = self.patterns["range"].sub(" to ", text)
         text = self.patterns["s_after_number"].sub(" S", text)
-        text = self.patterns["possessive_s"].sub("'S", text)
         text = self.patterns["x_possessive"].sub("s", text)
         text = self.patterns["initials"].sub(
             lambda m: m.group().replace(".", "-"), text
@@ -205,7 +202,6 @@ class TextNormalizerHybrid:
         text = re.sub(r"\d*\.\d+", handle_decimal, text)
         text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)
         text = re.sub(r"(?<=\d)S", " S", text)
-        text = re.sub(r"(?<=[BCDFGHJ-NP-TV-Z])'?s\b", "'S", text)
         text = re.sub(r"(?<=X')S\b", "s", text)
         text = re.sub(r"(?i)(?<=[A-Z])\.(?=[A-Z])", "-", text)
 

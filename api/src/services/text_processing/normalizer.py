@@ -489,7 +489,6 @@ def normalize_text(text: str, normalization_options: NormalizationOptions) -> st
     # Handle various formatting
     text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)
     text = re.sub(r"(?<=\d)S", " S", text)
-    text = re.sub(r"(?<=[BCDFGHJ-NP-TV-Z])'?s\b", "'S", text)
     text = re.sub(r"(?<=X')S\b", "s", text)
     text = re.sub(
         r"(?:[A-Za-z]\.){2,} [a-z]", lambda m: m.group().replace(".", "-"), text
